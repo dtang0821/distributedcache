@@ -12,6 +12,10 @@ add_library(distributed_cache
     src/cache/cachestore.cpp
     src/cache/lruevictionpolicy.cpp
     src/cache/ttlmanager.cpp
+    src/net/client_session.cpp
+    src/net/commandparser.cpp
+    src/net/tcpserver.cpp
+    src/utils/threadpool.cpp
 )
 
 target_include_directories(distributed_cache
@@ -25,14 +29,24 @@ else()
     target_compile_options(distributed_cache PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+target_link_libraries(distributed_cache PUBLIC Threads::Threads)
+
+if(WIN32)
+    target_link_libraries(distributed_cache PUBLIC ws2_32)
+endif()
+
 add_executable(distributed_cache_app src/main.cpp)
 target_link_libraries(distributed_cache_app PRIVATE distributed_cache)
 
 add_executable(cache_tests tests/CacheTests.cpp)
-target_link_libraries(cache_tests PRIVATE distributed_cache Threads::Threads)
+target_link_libraries(cache_tests PRIVATE distributed_cache)
+
+add_executable(network_tests tests/NetworkTests.cpp)
+target_link_libraries(network_tests PRIVATE distributed_cache)
 
 add_executable(cache_benchmark benchmarks/CacheBenchmark.cpp)
 target_link_libraries(cache_benchmark PRIVATE distributed_cache)
 
 enable_testing()
 add_test(NAME CacheTests COMMAND cache_tests)
+add_test(NAME NetworkTests COMMAND network_tests)
