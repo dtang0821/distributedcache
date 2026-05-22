@@ -6,9 +6,17 @@
 
 #include <mutex>
 #include <optional>
+#include <cstdint>
 #include <unordered_map>
+#include <vector>
 
 namespace distributed_cache {
+
+struct CacheSnapshotEntry {
+    Key key;
+    Value value;
+    std::optional<std::uint64_t> ttlMillisRemaining;
+};
 
 class CacheStore {
 public:
@@ -20,6 +28,8 @@ public:
     bool exists(const Key& key);
     std::size_t size();
     std::size_t capacity() const;
+    std::vector<std::pair<Key, Value>> entriesSnapshot();
+    std::vector<CacheSnapshotEntry> snapshotEntries();
     void clear();
 
 private:

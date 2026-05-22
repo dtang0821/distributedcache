@@ -1,0 +1,3 @@
+PUT 1 1779460814687 -1 11 3 snapshottedold
+PUT 2 1779460814690 -1 5 3 afternew
+DELETE 3 1779460814690 11 snapshotted

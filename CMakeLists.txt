@@ -14,7 +14,22 @@ add_library(distributed_cache
     src/cache/ttlmanager.cpp
     src/net/client_session.cpp
     src/net/commandparser.cpp
+    src/net/replication_server.cpp
+    src/net/replication_session.cpp
     src/net/tcpserver.cpp
+    src/persistence/append_only_log.cpp
+    src/persistence/log_entry.cpp
+    src/persistence/persistence_manager.cpp
+    src/persistence/recovery_manager.cpp
+    src/persistence/snapshot_manager.cpp
+    src/replication/replication_log.cpp
+    src/replication/replication_manager.cpp
+    src/replication/replication_message.cpp
+    src/replication/replication_peer.cpp
+    src/sharding/consistent_hash_ring.cpp
+    src/sharding/key_router.cpp
+    src/sharding/rebalance_manager.cpp
+    src/sharding/shard_manager.cpp
     src/utils/threadpool.cpp
 )
 
@@ -44,9 +59,30 @@ target_link_libraries(cache_tests PRIVATE distributed_cache)
 add_executable(network_tests tests/NetworkTests.cpp)
 target_link_libraries(network_tests PRIVATE distributed_cache)
 
+add_executable(replication_tests tests/ReplicationTests.cpp)
+target_link_libraries(replication_tests PRIVATE distributed_cache)
+
+add_executable(sharding_tests tests/ShardingTests.cpp)
+target_link_libraries(sharding_tests PRIVATE distributed_cache)
+
+add_executable(persistence_tests tests/PersistenceTests.cpp)
+target_link_libraries(persistence_tests PRIVATE distributed_cache)
+
 add_executable(cache_benchmark benchmarks/CacheBenchmark.cpp)
 target_link_libraries(cache_benchmark PRIVATE distributed_cache)
+
+add_executable(replication_benchmark benchmarks/ReplicationBenchmark.cpp)
+target_link_libraries(replication_benchmark PRIVATE distributed_cache)
+
+add_executable(sharding_benchmark benchmarks/ShardingBenchmark.cpp)
+target_link_libraries(sharding_benchmark PRIVATE distributed_cache)
+
+add_executable(persistence_benchmark benchmarks/PersistenceBenchmark.cpp)
+target_link_libraries(persistence_benchmark PRIVATE distributed_cache)
 
 enable_testing()
 add_test(NAME CacheTests COMMAND cache_tests)
 add_test(NAME NetworkTests COMMAND network_tests)
+add_test(NAME ReplicationTests COMMAND replication_tests)
+add_test(NAME ShardingTests COMMAND sharding_tests)
+add_test(NAME PersistenceTests COMMAND persistence_tests)

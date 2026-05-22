@@ -31,9 +31,16 @@ int toNativeSocket(SocketHandle socket)
 
 } // namespace
 
-ClientSession::ClientSession(SocketHandle socket, std::shared_ptr<CacheStore> cache)
+ClientSession::ClientSession(SocketHandle socket,
+                             std::shared_ptr<CacheStore> cache,
+                             NodeRole role,
+                             std::shared_ptr<ReplicationManager> replicationManager,
+                             std::shared_ptr<PersistenceManager> persistenceManager)
     : socket_(socket),
-      cache_(std::move(cache))
+      cache_(std::move(cache)),
+      role_(role),
+      replicationManager_(std::move(replicationManager)),
+      persistenceManager_(std::move(persistenceManager))
 {
 }
 
@@ -111,8 +118,21 @@ std::string ClientSession::executeCommand(const std::string& line)
 
     const auto& command = parsed.command;
     switch (command.type) {
-    case CommandType::Put:
-        return cache_->put(command.key, command.value) ? "OK" : "ERROR cache capacity is zero";
+    case CommandType::Put: {
+        if (role_ != NodeRole::Leader) {
+            return "ERROR follower is read-only";
+        }
+        const bool stored = persistenceManager_
+                                ? persistenceManager_->put(command.key, command.value)
+                                : cache_->put(command.key, command.value);
+        if (!stored) {
+            return "ERROR cache capacity is zero";
+        }
+        if (replicationManager_) {
+            replicationManager_->replicatePut(command.key, command.value);
+        }
+        return "OK";
+    }
     case CommandType::Get: {
         const auto value = cache_->get(command.key);
         if (!value.has_value()) {
@@ -120,8 +140,21 @@ std::string ClientSession::executeCommand(const std::string& line)
         }
         return "VALUE " + value.value();
     }
-    case CommandType::Delete:
-        return cache_->remove(command.key) ? "DELETED" : "NOT_FOUND";
+    case CommandType::Delete: {
+        if (role_ != NodeRole::Leader) {
+            return "ERROR follower is read-only";
+        }
+        const bool removed = persistenceManager_
+                                 ? persistenceManager_->remove(command.key)
+                                 : cache_->remove(command.key);
+        if (!removed) {
+            return "NOT_FOUND";
+        }
+        if (replicationManager_) {
+            replicationManager_->replicateDelete(command.key);
+        }
+        return "DELETED";
+    }
     case CommandType::Exists:
         return cache_->exists(command.key) ? "YES" : "NO";
     case CommandType::Size:

@@ -1,8 +1,7 @@
-#include "net/tcpserver.hpp"
+#include "net/replication_server.hpp"
 
-#include "net/client_session.hpp"
+#include "net/replication_session.hpp"
 
-#include <cstring>
 #include <iostream>
 #include <stdexcept>
 
@@ -12,7 +11,6 @@
 #endif
 #include <ws2tcpip.h>
 #else
-#include <arpa/inet.h>
 #include <netdb.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -59,28 +57,22 @@ void closeNativeSocket(SocketHandle socket)
 
 } // namespace
 
-TcpServer::TcpServer(std::string host,
-                     std::uint16_t port,
-                     std::shared_ptr<CacheStore> cache,
-                     std::size_t workerThreads,
-                     NodeRole role,
-                     std::shared_ptr<ReplicationManager> replicationManager,
-                     std::shared_ptr<PersistenceManager> persistenceManager)
+ReplicationServer::ReplicationServer(std::string host,
+                                     std::uint16_t port,
+                                     std::shared_ptr<ReplicationManager> replicationManager,
+                                     std::size_t workerThreads)
     : host_(std::move(host)),
       port_(port),
-      cache_(std::move(cache)),
-      role_(role),
       replicationManager_(std::move(replicationManager)),
-      persistenceManager_(std::move(persistenceManager)),
       threadPool_(workerThreads),
       listenSocket_(invalidSocket())
 {
-    if (!cache_) {
-        throw std::invalid_argument("cache instance is required");
+    if (!replicationManager_) {
+        throw std::invalid_argument("replication manager is required");
     }
 }
 
-TcpServer::~TcpServer()
+ReplicationServer::~ReplicationServer()
 {
     stop();
 #ifdef _WIN32
@@ -90,14 +82,13 @@ TcpServer::~TcpServer()
 #endif
 }
 
-void TcpServer::run()
+void ReplicationServer::run()
 {
     initializeSockets();
     listenSocket_ = createListenSocket();
     running_ = true;
 
-    std::cout << "distributed-cache TCP server listening on "
-              << host_ << ":" << port_ << '\n';
+    std::cout << "replication server listening on " << host_ << ":" << port_ << '\n';
 
     while (running_) {
 #ifdef _WIN32
@@ -108,19 +99,15 @@ void TcpServer::run()
         if (clientSocket < 0) {
 #endif
             if (running_) {
-                std::cerr << "accept failed" << '\n';
+                std::cerr << "replication accept failed" << '\n';
             }
             continue;
         }
 
         const SocketHandle sessionSocket = static_cast<SocketHandle>(clientSocket);
         try {
-            threadPool_.submit([sessionSocket,
-                                cache = cache_,
-                                role = role_,
-                                replicationManager = replicationManager_,
-                                persistenceManager = persistenceManager_] {
-                ClientSession session(sessionSocket, cache, role, replicationManager, persistenceManager);
+            threadPool_.submit([sessionSocket, manager = replicationManager_] {
+                ReplicationSession session(sessionSocket, manager);
                 session.run();
             });
         } catch (...) {
@@ -130,29 +117,27 @@ void TcpServer::run()
     }
 }
 
-void TcpServer::stop()
+void ReplicationServer::stop()
 {
     running_ = false;
     closeListenSocket();
 }
 
-void TcpServer::initializeSockets()
+void ReplicationServer::initializeSockets()
 {
 #ifdef _WIN32
     if (socketsInitialized_) {
         return;
     }
-
     WSADATA data;
-    const int result = WSAStartup(MAKEWORD(2, 2), &data);
-    if (result != 0) {
-        throw std::runtime_error("WSAStartup failed");
+    if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
+        throw std::runtime_error("WSAStartup failed for replication server");
     }
 #endif
     socketsInitialized_ = true;
 }
 
-SocketHandle TcpServer::createListenSocket()
+SocketHandle ReplicationServer::createListenSocket()
 {
     addrinfo hints{};
     hints.ai_family = AF_INET;
@@ -162,9 +147,8 @@ SocketHandle TcpServer::createListenSocket()
     addrinfo* rawResult = nullptr;
     const std::string port = std::to_string(port_);
     const char* host = host_.empty() ? nullptr : host_.c_str();
-    const int lookup = getaddrinfo(host, port.c_str(), &hints, &rawResult);
-    if (lookup != 0) {
-        throw std::runtime_error("getaddrinfo failed");
+    if (getaddrinfo(host, port.c_str(), &hints, &rawResult) != 0) {
+        throw std::runtime_error("replication getaddrinfo failed");
     }
 
     SocketHandle created = invalidSocket();
@@ -196,15 +180,13 @@ SocketHandle TcpServer::createListenSocket()
     }
 
     freeaddrinfo(rawResult);
-
     if (created == invalidSocket()) {
-        throw std::runtime_error("failed to bind TCP listen socket");
+        throw std::runtime_error("failed to bind replication socket");
     }
-
     return created;
 }
 
-void TcpServer::closeListenSocket()
+void ReplicationServer::closeListenSocket()
 {
     const SocketHandle socket = listenSocket_;
     listenSocket_ = invalidSocket();

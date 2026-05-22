@@ -92,6 +92,39 @@ std::size_t CacheStore::capacity() const
     return maxCapacity_;
 }
 
+std::vector<std::pair<Key, Value>> CacheStore::entriesSnapshot()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    cleanupExpiredEntries();
+
+    std::vector<std::pair<Key, Value>> snapshot;
+    snapshot.reserve(entries_.size());
+    for (const auto& pair : entries_) {
+        snapshot.emplace_back(pair.first, pair.second.value);
+    }
+    return snapshot;
+}
+
+std::vector<CacheSnapshotEntry> CacheStore::snapshotEntries()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    cleanupExpiredEntries();
+
+    std::vector<CacheSnapshotEntry> snapshot;
+    snapshot.reserve(entries_.size());
+    const auto now = Clock::now();
+    for (const auto& pair : entries_) {
+        std::optional<std::uint64_t> ttlMillis;
+        if (pair.second.expiresAt.has_value()) {
+            const auto remaining = pair.second.expiresAt.value() - now;
+            ttlMillis = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(remaining).count());
+        }
+        snapshot.push_back({pair.first, pair.second.value, ttlMillis});
+    }
+    return snapshot;
+}
+
 void CacheStore::clear()
 {
     std::lock_guard<std::mutex> lock(mutex_);
