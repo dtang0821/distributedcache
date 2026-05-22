@@ -1,240 +1,260 @@
-# Distributed Cache
+# Distributed In-Memory Cache
 
-This project is a production-style in-memory cache written in modern C++17. Phase 1 established the single-node cache engine. Phase 2 added a multithreaded TCP cache server. Phase 3 introduced leader/follower replication. Phase 4 added sharding and consistent hashing. Phase 5 adds Redis-inspired persistence with append-only logs, snapshots, startup recovery, and durability policies.
+C++17 Distributed Systems Project featuring replication, sharding, persistence, and concurrent TCP networking.
 
-## Features
+This repository is a production-inspired distributed cache built from first principles in modern C++17. It is intentionally scoped as an educational infrastructure project: the code demonstrates the core mechanics behind cache engines, TCP servers, replication, consistent hashing, and durable recovery without pretending to be a production database.
 
-- String key/value cache API
-- Configurable maximum capacity
-- Optional TTL per entry
-- Lazy TTL expiration during `get()`, `put()`, and `size()`
-- LRU eviction when capacity is exceeded
-- O(1) average lookup, insert, delete, and LRU recency updates
-- Thread-safe public API
-- Multithreaded TCP server
-- Fixed worker thread pool
-- Line-oriented cache command protocol
+## Overview
+
+The project evolved through five focused phases:
+
+| Phase | Focus | What It Added |
+| --- | --- | --- |
+| Phase 1 | Single-node cache | Thread-safe in-memory key/value cache, TTL expiration, LRU eviction |
+| Phase 2 | Networking | Concurrent TCP server, protocol parsing, fixed thread pool |
+| Phase 3 | Replication | Leader/follower replication, async propagation, replication log, replay recovery |
+| Phase 4 | Sharding | Consistent hashing, virtual nodes, shard ownership, rebalancing |
+| Phase 5 | Persistence | Append-only persistence log, snapshots, startup recovery, crash reconstruction |
+
+The result is a compact distributed systems project that covers the fundamentals interviewers tend to care about:
+
+- How requests move through a concurrent server.
+- How cache entries expire and evict.
+- How followers catch up after missed replication.
+- How consistent hashing minimizes key movement.
+- How append-only logs and snapshots rebuild state after a restart.
+
+## Architecture Overview
+
+At a high level, clients talk to a TCP server. The server uses a fixed thread pool to process client sessions. Requests are parsed into cache commands, routed to the owning shard when sharding is enabled, applied to the local cache, replicated from shard leaders to followers, and persisted locally through an append-only log plus snapshots.
+
+![Architecture](docs/architecture.png)
+
+### Request Lifecycle
+
+```text
+Client
+  -> TCP Server
+  -> Thread Pool
+  -> CommandParser
+  -> KeyRouter
+  -> ConsistentHashRing
+  -> Shard Leader CacheStore
+  -> ReplicationManager
+  -> PersistenceManager
+```
+
+### Write Path
+
+Writes are accepted by leaders only.
+
+```text
+PUT key value
+  -> parse command
+  -> find owning shard
+  -> update leader CacheStore
+  -> append persistence AOF record
+  -> append replication log entry
+  -> asynchronously send to followers
+```
+
+Followers reject client writes and accept replicated writes only through the replication protocol.
+
+### Read Path
+
+Reads are routed by key ownership.
+
+```text
+GET key
+  -> parse command
+  -> find owning shard
+  -> read CacheStore
+  -> lazily remove expired entry if needed
+```
+
+The current router reads from the owning shard node. The architecture leaves room for follower read routing later.
+
+### Recovery Path
+
+```text
+startup
+  -> load latest snapshot
+  -> replay AOF entries after snapshot sequence
+  -> rebuild in-memory CacheStore
+  -> restore TTL metadata with elapsed-time aging
+```
+
+Expired TTL entries are not resurrected during recovery.
+
+## Feature List
+
+- TCP networking with a simple text protocol
+- Fixed thread pool for concurrent client handling
+- Thread-safe in-memory cache API
+- LRU eviction using `std::list`
+- TTL expiration with lazy cleanup
+- Configurable cache capacity
 - Leader/follower replication
 - Read-only followers
-- In-memory append-only replication log
-- `SYNC_FROM` replay recovery
+- Append-only replication logs
+- Replica replay recovery with `SYNC_FROM`
 - Consistent hashing ring
 - Virtual nodes per shard
-- Shard-aware key routing
+- Shard-aware request routing
 - Dynamic shard addition/removal
-- Simplified rebalancing
+- Best-effort shard rebalancing
 - Append-only persistence log
 - Snapshot persistence
-- Startup replay recovery
-- Configurable fsync-style durability policies
-- Persistence metrics
-- Standalone tests and benchmark targets
+- Startup and crash recovery
+- Persistence durability policies
+- Benchmarks for cache, replication, sharding, and persistence
+- Tests for all major subsystems
 
-## Project Layout
+## Distributed Systems Concepts
 
-```text
-include/
-  cache/
-    cacheentry.hpp
-    cachestore.hpp
-    evictionpolicy.hpp
-    lruevictionpolicy.hpp
-    ttlmanager.hpp
-  common/
-    types.hpp
-  utils/
-    threadsafequeue.hpp
-    threadpool.hpp
-    timer.hpp
-  net/
-    client_session.hpp
-    commandparser.hpp
-    replication_server.hpp
-    replication_session.hpp
-    tcpserver.hpp
-  replication/
-    cluster_config.hpp
-    replication_log.hpp
-    replication_manager.hpp
-    replication_message.hpp
-    replication_peer.hpp
-  sharding/
-    consistent_hash_ring.hpp
-    key_router.hpp
-    rebalance_manager.hpp
-    shard_manager.hpp
-    shard_node.hpp
-    virtual_node.hpp
-  persistence/
-    append_only_log.hpp
-    log_entry.hpp
-    persistence_config.hpp
-    persistence_manager.hpp
-    recovery_manager.hpp
-    snapshot_manager.hpp
-    snapshot_metadata.hpp
-src/
-  cache/
-  net/
-  replication/
-  sharding/
-  persistence/
-  utils/
-  main.cpp
-tests/
-  CacheTests.cpp
-  NetworkTests.cpp
-  ReplicationTests.cpp
-  ShardingTests.cpp
-  PersistenceTests.cpp
-benchmarks/
-  CacheBenchmark.cpp
-docs/
+### Eventual Consistency
+
+Replication is asynchronous. A leader can acknowledge a write before every follower has applied it. This means followers may briefly serve stale reads. That tradeoff keeps writes fast and the architecture understandable.
+
+### Asynchronous Replication
+
+Leaders append a replication log entry and submit follower sends to a replication thread pool. Followers apply `REPL_PUT` and `REPL_DELETE` messages locally. If a follower reconnects, it can request missed entries with `SYNC_FROM <sequence>`.
+
+### Consistent Hashing
+
+Keys and shard virtual nodes are hashed into the same `uint64_t` ring. A key is owned by the first shard clockwise from the key hash. This avoids the massive remapping problem caused by `hash(key) % N`.
+
+### Horizontal Scalability
+
+Adding shards expands capacity by moving only the key ranges newly owned by the added shard. Removing a shard moves that shard's keys to their new clockwise owners.
+
+### Partition Ownership
+
+The shard manager knows which node owns each key. The router checks ownership before writes, reads, and deletes. Writes require a shard leader.
+
+### Durability
+
+Persistence is node-local. Mutations are appended to an AOF file, and snapshots periodically checkpoint full cache state. Recovery loads the snapshot first, then replays later log entries.
+
+### Replay Reconstruction
+
+Both replication and persistence use replay-oriented design. Replication replay catches followers up after disconnects; persistence replay rebuilds a node after restart.
+
+## Architecture Diagram
+
+Mermaid source is available in [docs/architecture.mmd](docs/architecture.mmd).
+
+```mermaid
+flowchart TD
+    Client[Client] --> TCP[TCP Server]
+    TCP --> Pool[Thread Pool]
+    Pool --> Parser[Command Parser]
+    Parser --> Router[Key Router]
+    Router --> Ring[Consistent Hash Ring]
+    Ring --> ShardA[Shard A Leader]
+    Ring --> ShardB[Shard B Leader]
+    Ring --> ShardC[Shard C Leader]
+    ShardA --> RepA[Follower Replicas]
+    ShardB --> RepB[Follower Replicas]
+    ShardC --> RepC[Follower Replicas]
+    ShardA --> Persist[Persistence Manager]
+    Persist --> AOF[Append-Only Log]
+    Persist --> Snap[Snapshots]
+    Snap --> Recovery[Startup Recovery]
+    AOF --> Recovery
+    Recovery --> ShardA
 ```
 
-## Architecture
+## Performance
 
-`CacheStore` is the main API and owns the storage map plus eviction policy. The internal storage is an `std::unordered_map<Key, CacheEntry>` for average O(1) key lookup. Each `CacheEntry` stores the key, value, optional expiration timestamp, and an iterator into the LRU usage list.
+Benchmark details and local smoke-test results are documented in [docs/performance.md](docs/performance.md).
 
-The eviction layer is separated behind `EvictionPolicy`. Phase 1 provides `LruEvictionPolicy`, which maintains a doubly linked `std::list` ordered from most recently used to least recently used. This keeps successful `get()` calls and overwrites cheap because the cache can splice a node to the front in O(1).
+These numbers are not presented as production claims. They are local development measurements used to validate behavior and compare subsystem costs.
 
-`TtlManager` centralizes expiration timestamp creation and expiration checks. This keeps TTL logic out of the eviction policy and leaves room for future background cleanup or timing-wheel style expiration without changing the cache API.
+| Benchmark | Workload | Local Result |
+| --- | --- | --- |
+| Cache | 50k mixed PUT/GET, capacity 10k | ~1.05M ops/sec, p50 0.60 us, p99 1.90 us |
+| Replication | 5k replicated writes, 2 loopback followers | ~101k writes/sec, p50 2.50 us, p99 65.80 us |
+| Sharding | 10k writes, 4 shards, 64 vnodes | ~365k writes/sec, p50 1.80 us, p99 6.20 us |
+| Persistence | 5k persisted writes, AOF + snapshot recovery | ~8.8k writes/sec, p50 87.70 us, p99 309.60 us |
 
-`TcpServer` owns socket setup and the accept loop. Accepted clients are submitted to a fixed `ThreadPool`, where each `ClientSession` reads newline-delimited commands, uses `CommandParser`, and executes operations against the shared thread-safe `CacheStore`.
+## Design Tradeoffs
 
-`ReplicationManager` coordinates Phase 3 replication. On a leader, it appends `REPL_PUT` and `REPL_DELETE` entries to `ReplicationLog` and broadcasts them asynchronously to configured followers. On a follower, it applies replication messages to the local `CacheStore` and tracks the last applied sequence.
+The major tradeoffs are documented in [docs/design_tradeoffs.md](docs/design_tradeoffs.md).
 
-`ConsistentHashRing` maps keys to shard node IDs using a sorted `std::map<uint64_t, NodeID>`. `ShardManager` tracks shard metadata and ownership. `KeyRouter` sends operations to the owning shard. `RebalanceManager` moves only keys whose ownership changed after topology updates.
+Key choices:
 
-`PersistenceManager` coordinates node-local durability. It writes mutations to `AppendOnlyLog`, creates full-cache snapshots through `SnapshotManager`, and uses `RecoveryManager` to rebuild memory on startup by loading the latest snapshot and replaying AOF entries after it.
+- Thread pools instead of thread-per-connection.
+- Leader/follower replication instead of multi-leader writes.
+- Asynchronous replication instead of quorum writes.
+- Consistent hashing instead of modulo hashing.
+- Virtual nodes for smoother key distribution.
+- Snapshots plus AOF instead of log-only recovery.
+- No consensus yet, by design.
 
-## Thread Safety
+## Interview Notes
 
-The cache uses a single `std::mutex` around public operations. This is deliberately conservative for Phase 1 because `get()` changes LRU ordering and is therefore a write to internal state. The design favors correctness and maintainability over lock-free complexity.
+For interview preparation, see [docs/interview_notes.md](docs/interview_notes.md). It covers likely questions about networking, replication, sharding, consistent hashing, persistence, recovery, concurrency, and future improvements.
 
-Future phases can introduce finer-grained locking, segmented maps, read/write locks, or shard-local locks once clustering and sharding requirements are clearer.
+## Build Instructions
 
-The TCP server uses a fixed thread pool rather than unbounded thread-per-connection creation. This gives the server a predictable concurrency ceiling and introduces a realistic backend architecture without overcomplicating the cache core.
-
-Replication also uses a thread pool. The leader does not block client writes waiting for every follower to apply a message, so followers are eventually consistent.
-
-Shard routing is deterministic and local to the current topology. This phase does not add consensus-backed topology changes; membership changes are explicit and best-effort.
-
-## Persistence
-
-The write path is Redis-inspired:
-
-```text
-Client -> CacheStore -> AppendOnlyLog -> optional flush
-```
-
-The recovery path is:
-
-```text
-Snapshot -> Replay AOF -> Rebuild CacheStore
-```
-
-Durability policies:
-
-- `always`: flush every write, safest and slowest.
-- `every-second`: balanced default.
-- `never`: fastest, weakest durability.
-
-TTL metadata is persisted and aged during recovery so expired entries are not resurrected after downtime.
-
-## Sharding Strategy
-
-The project uses consistent hashing instead of `hash(key) % N`.
-
-Modulo hashing is attractive but remaps most keys when the node count changes. Consistent hashing places both keys and shard virtual nodes onto the same ring, then assigns each key to the first node clockwise from the key's hash. Adding or removing a node moves only nearby ranges.
-
-```text
-Client -> KeyRouter -> ConsistentHashRing
-                      /        |        \
-                  ShardA    ShardB    ShardC
-```
-
-Each physical shard owns many virtual nodes, such as `ShardA-vnode-0`, `ShardA-vnode-1`, and `ShardA-vnode-2`. Virtual nodes improve distribution balance and reduce hot partitions.
-
-## TTL Strategy
-
-TTL is optional per entry. Entries without a TTL never expire. Entries with a TTL store an absolute `std::chrono::steady_clock` expiration timestamp.
-
-Expiration is lazy:
-
-- `get()` removes the requested key if it has expired.
-- `put()` cleans expired TTL entries before inserting or updating.
-- `size()` also performs cleanup so callers see live-entry counts.
-
-The cache tracks how many entries have TTLs and skips full cleanup scans when no expiring entries exist.
-
-## LRU Strategy
-
-The LRU policy stores keys in a doubly linked list:
-
-- Front: most recently used
-- Back: least recently used
-
-Successful `get()` calls move the entry to the front. Inserts place new entries at the front. When capacity is exceeded, the cache asks the eviction policy for the back key and removes it from both the map and list.
-
-## Build
+### CMake
 
 ```sh
 cmake -S . -B build
 cmake --build build
+ctest --test-dir build --output-on-failure
 ```
 
-## Run The TCP Server
+### Direct g++ Build
+
+On the current Windows/MSYS2-style environment, the project has been verified with direct `g++` builds. A representative build command:
 
 ```sh
-./build/distributed_cache_app [host] [port] [capacity] [worker_threads]
+g++ -std=c++17 -Wall -Wextra -Wpedantic -Iinclude \
+  src/cache/cachestore.cpp src/cache/lruevictionpolicy.cpp src/cache/ttlmanager.cpp \
+  src/net/client_session.cpp src/net/commandparser.cpp src/net/replication_server.cpp \
+  src/net/replication_session.cpp src/net/tcpserver.cpp \
+  src/persistence/append_only_log.cpp src/persistence/log_entry.cpp \
+  src/persistence/persistence_manager.cpp src/persistence/recovery_manager.cpp \
+  src/persistence/snapshot_manager.cpp \
+  src/replication/replication_log.cpp src/replication/replication_manager.cpp \
+  src/replication/replication_message.cpp src/replication/replication_peer.cpp \
+  src/sharding/consistent_hash_ring.cpp src/sharding/key_router.cpp \
+  src/sharding/rebalance_manager.cpp src/sharding/shard_manager.cpp \
+  src/utils/threadpool.cpp src/main.cpp \
+  -lws2_32 -o distributed_cache_app
 ```
 
-Defaults:
+On Linux/macOS, omit `-lws2_32`.
 
-```text
-host=0.0.0.0
-port=6379
-capacity=100000
-worker_threads=4
-```
+## Running Nodes
 
-Example:
+Leader:
 
 ```sh
-./build/distributed_cache_app 127.0.0.1 6379 100000 4
+./distributed_cache_app --leader --host 127.0.0.1 --port 6379 \
+  --replication-port 7379 --peer 127.0.0.1:7380 \
+  --data-dir data/leader --fsync every-second --snapshot-interval 30
 ```
 
-Cluster-aware startup is also supported:
+Follower:
 
 ```sh
-./build/distributed_cache_app --leader --port 6379 --replication-port 7379 --peer 127.0.0.1:7380
-./build/distributed_cache_app --follower 127.0.0.1:7379 --port 6380 --replication-port 7380
+./distributed_cache_app --follower 127.0.0.1:7379 --host 127.0.0.1 \
+  --port 6380 --replication-port 7380 \
+  --data-dir data/follower --fsync every-second
 ```
 
-Persistence flags:
+Volatile test node:
 
 ```sh
-./build/distributed_cache_app --data-dir data/node-a --fsync every-second --snapshot-interval 30
-./build/distributed_cache_app --no-persistence
+./distributed_cache_app --leader --port 6379 --no-persistence
 ```
 
-Leaders accept `PUT` and `DELETE`. Followers reject client writes and serve read-only commands: `GET`, `EXISTS`, and `SIZE`.
+## Example Usage
 
-## TCP Protocol
-
-Commands are newline-delimited:
-
-```text
-PUT key value
-GET key
-DELETE key
-EXISTS key
-SIZE
-QUIT
-```
-
-Example session:
+The TCP protocol is newline-delimited text.
 
 ```text
 PUT alpha one
@@ -247,76 +267,83 @@ GET alpha
 NOT_FOUND
 ```
 
-## Test
+Follower write rejection:
 
-```sh
-ctest --test-dir build --output-on-failure
+```text
+PUT alpha one
+ERROR follower is read-only
 ```
 
-Or run the test binary directly:
+Replication behavior:
 
-```sh
-./build/cache_tests
-./build/network_tests
-./build/replication_tests
-./build/sharding_tests
-./build/persistence_tests
+```text
+Leader receives:   PUT user:42 profile-json
+Leader appends:    REPL_PUT <seq> user:42 profile-json <timestamp>
+Follower applies:  user:42 = profile-json
 ```
 
-On Windows generators, the executable may be under a configuration directory such as `build/Debug/cache_tests.exe`.
+Shard routing example:
 
-## Benchmark
-
-```sh
-./build/cache_benchmark [cache_size] [operation_count]
+```text
+PUT user:123 data
+  -> hash(user:123)
+  -> ConsistentHashRing owner lookup
+  -> ShardB leader
+  -> ShardB followers
 ```
 
-Example:
+## Testing
+
+The repository includes focused executable test suites:
+
+| Test Suite | Coverage |
+| --- | --- |
+| `cache_tests` | Put/get/delete, overwrite, TTL, LRU, capacity, concurrency |
+| `network_tests` | Command parsing and thread pool behavior |
+| `replication_tests` | Leader propagation, delete propagation, follower read-only behavior, replay recovery, ordering, multiple followers |
+| `sharding_tests` | Consistent hash lookup, vnode distribution, minimal movement, removal rebalance, ownership, shard leader routing |
+| `persistence_tests` | AOF logging, snapshots, startup recovery, replay reconstruction, crash simulation, TTL recovery, durability modes |
+
+Direct execution examples:
 
 ```sh
-./build/cache_benchmark 100000 1000000
+./cache_tests
+./network_tests
+./replication_tests
+./sharding_tests
+./persistence_tests
 ```
 
-The benchmark runs a randomized PUT/GET workload and prints:
+## Benchmarks
 
-- throughput in operations per second
-- p50 latency
-- p99 latency
-- final cache size
-
-Replication benchmark:
+Benchmark executables:
 
 ```sh
-./build/replication_benchmark [operation_count] [follower_count] [capacity]
+./cache_benchmark [cache_size] [operation_count]
+./replication_benchmark [operation_count] [follower_count] [capacity]
+./sharding_benchmark [operation_count] [shard_count] [virtual_nodes]
+./persistence_benchmark [operation_count] [capacity]
 ```
 
-It prints replicated writes per second, p50 latency, p99 latency, follower lag, and catch-up speed.
+See [docs/performance.md](docs/performance.md) for methodology, sample results, bottlenecks, and future profiling opportunities.
 
-Sharding benchmark:
+## Future Work
 
-```sh
-./build/sharding_benchmark [operation_count] [shard_count] [virtual_nodes]
-```
+Possible future phases:
 
-It prints routing throughput, p50 latency, p99 latency, rebalance speed, and key distribution statistics.
+- Consensus-backed leader election.
+- Advanced failover.
+- Read routing to followers.
+- Cross-shard operations with explicit transaction semantics.
+- Bounded AOF compaction.
+- Snapshot shipping.
+- Compression for snapshots and logs.
+- Async IO.
+- Observability and metrics dashboards.
+- Backpressure and overload control.
 
-Persistence benchmark:
+These were intentionally excluded so the current project stays focused on core distributed systems fundamentals: concurrency, replication, partitioning, durability, and recovery.
 
-```sh
-./build/persistence_benchmark [operation_count] [capacity]
-```
+## Project Philosophy
 
-It prints persistent writes per second, p50 latency, p99 latency, flush latency, replay duration, recovery startup time, and snapshot duration.
-
-## Future Distributed Phases
-
-The Phase 1 cache engine is meant to become the storage foundation for later distributed systems work:
-
-- Phase 5: membership and failure detection
-- Phase 6: bounded AOF compaction and snapshot shipping
-- Phase 7: consensus or coordinated writes, if required by the consistency model
-- Phase 8: observability, backpressure, and operational tooling
-
-The current code avoids distributed assumptions so these decisions can be made explicitly in later phases.
-#   d i s t r i b u t e d c a c h e  
- 
+This is not a production database. It is a production-inspired systems project designed to be read, explained, benchmarked, and extended. The code favors explicit architecture and clear tradeoffs over hidden magic.

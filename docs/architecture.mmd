@@ -1,0 +1,39 @@
+flowchart TD
+    Client["Client"] --> TCP["TCP Server"]
+    TCP --> Pool["Fixed Thread Pool"]
+    Pool --> Parser["Command Parser"]
+    Parser --> Router["Key Router"]
+    Router --> Ring["Consistent Hash Ring"]
+
+    Ring --> ShardA["Shard A Leader"]
+    Ring --> ShardB["Shard B Leader"]
+    Ring --> ShardC["Shard C Leader"]
+
+    ShardA --> CacheA["CacheStore<br/>TTL + LRU"]
+    ShardB --> CacheB["CacheStore<br/>TTL + LRU"]
+    ShardC --> CacheC["CacheStore<br/>TTL + LRU"]
+
+    ShardA --> ReplA["Follower Replicas"]
+    ShardB --> ReplB["Follower Replicas"]
+    ShardC --> ReplC["Follower Replicas"]
+
+    ShardA --> ReplLog["Replication Log"]
+    ReplLog --> ReplReplay["SYNC_FROM Replay"]
+    ReplReplay --> ReplA
+
+    ShardA --> Persist["Persistence Manager"]
+    Persist --> AOF["Append-Only File"]
+    Persist --> Snapshot["Snapshot Store"]
+    AOF --> Recovery["Startup Recovery"]
+    Snapshot --> Recovery
+    Recovery --> CacheA
+
+    classDef client fill:#f7f7f7,stroke:#333,stroke-width:1px;
+    classDef network fill:#e8f1ff,stroke:#2c5282,stroke-width:1px;
+    classDef shard fill:#e9f7ef,stroke:#276749,stroke-width:1px;
+    classDef persistence fill:#fff4e6,stroke:#9c4221,stroke-width:1px;
+
+    class Client client;
+    class TCP,Pool,Parser,Router,Ring network;
+    class ShardA,ShardB,ShardC,CacheA,CacheB,CacheC,ReplA,ReplB,ReplC,ReplLog,ReplReplay shard;
+    class Persist,AOF,Snapshot,Recovery persistence;
